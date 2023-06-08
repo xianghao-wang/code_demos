@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define N 4
+#define M 4
 
 static int rank, nprocs;
 int main(int argc, char **argv)
@@ -11,46 +11,52 @@ int main(int argc, char **argv)
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
 
-  int *x = malloc(sizeof(int) * N);
-  int *shuffled = malloc(sizeof(int) * N * 2);
+  int N = M * nprocs;
+  int *A = malloc(sizeof(int) * M);
+  int *B = malloc(sizeof(int) * M);
 
   // Prepare data
-  for (int i = 0; i < N; i ++)
-    x[i] = rank * N + i;
+  for (int i = 0; i < M; i ++)
+    A[i] = rank * M + i;
 
-  // Step 1: shuffle
-  MPI_Datatype stride2;
-  MPI_Type_vector(N, 1, 2, MPI_INT, &stride2);
-  MPI_Type_commit(&stride2);
-  int partner = rank >= nprocs / 2 ? rank - nprocs / 2 : rank + nprocs / 2;
-  if (rank < partner)
+  // Shuffle
+  int nReq = 0;
+  MPI_Request reqs[M*2];
+  for (int i = 0; i < M; i ++)
   {
-    MPI_Recv(shuffled+1, 1, stride2, partner, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    for (int i = 0; i < N; i ++) shuffled[2*i] = x[i];
-  }
-  else
-    MPI_Send(x, N, MPI_INT, partner, 0, MPI_COMM_WORLD);
+    int idx = rank * M + i;
+    int idy = idx < N / 2 ? 2 * idx : 2 * (idx-N/2) + 1;
+    int partner = idy / M;
 
-  // Step 2: gather
-  if (rank == 0)
+    if (partner != rank)
+      MPI_Isend(&A[i], 1, MPI_INT, partner, idy % M, MPI_COMM_WORLD, &reqs[nReq ++]);
+    else
+      B[idy%M] = A[i];
+
+    idy = idx % 2 ? (idx - 1) / 2 + N / 2 : idx / 2;
+    partner = idy / M;
+    if (partner != rank)
+      MPI_Irecv(&B[i], 1, MPI_INT, partner, i, MPI_COMM_WORLD, &reqs[nReq ++]);
+    else
+      B[i] = A[idy%M];
+  }
+  MPI_Waitall(nReq, reqs, MPI_STATUS_IGNORE);
+
+  for (int i = 0; i < nprocs; i ++)
   {
-    int *all = malloc(sizeof(int) * N * nprocs * 2);
-    MPI_Gather(shuffled, 2 * N, MPI_INT, all, 2 * N, MPI_INT, 0, MPI_COMM_WORLD);
+    if (i == rank)
+    {
+      printf("Process %d:", rank);
+      for (int j = 0; j < M; j ++) printf(" %d", B[j]);
+      printf("\n");
+    }
 
-    // Print result
-    for (int i = 0; i < N * nprocs; i ++)
-      printf("%d ", all[i]);
-    putchar('\n');
-
-    free(all);
-  }
-  else
-  {
-    MPI_Gather(shuffled, 2 * N, MPI_INT, NULL, 2 * N, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Barrier(MPI_COMM_WORLD);
   }
 
-  free(x);
-  free(shuffled);
+
+  free(A);
+  free(B);
   MPI_Finalize();
   return 0;
 }
